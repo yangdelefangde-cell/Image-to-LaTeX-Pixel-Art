@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>图片转 LaTeX 像素拼图</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            max-width: 600px;
+            margin: 20px auto;
+            padding: 20px;
+            background: #1a1a1a;
+            color: #e0e0e0;
+        }
+        h1 { font-size: 1.3em; color: #7D90A9; margin-bottom: 10px; }
+        .info { color: #888; font-size: 12px; margin: 10px 0; }
+        input[type="file"] { margin: 10px 0; color: #e0e0e0; }
+        select, input[type="number"] {
+            margin: 10px 5px; padding: 6px 10px;
+            background: #111; color: #e0e0e0;
+            border: 1px solid #333; border-radius: 4px;
+        }
+        input[type="number"] { width: 88px; }
+        .pixel-settings { margin: 4px 0 8px; }
+        .pixel-settings label { color: #aaa; font-size: 12px; }
+        #preview-container {
+            display: inline-block;
+            margin: 10px 0;
+            border: 2px solid #333;
+            position: relative;
+        }
+        #preview {
+            display: block;
+            image-rendering: pixelated;
+        }
+        #preview-label {
+            position: absolute;
+            bottom: 2px; right: 4px;
+            background: rgba(0,0,0,0.7);
+            color: #ccc;
+            font-size: 10px;
+            padding: 1px 5px;
+            border-radius: 3px;
+        }
+        textarea {
+            width: 100%;
+            height: 200px;
+            background: #111;
+            color: #ccc;
+            border: 1px solid #333;
+            font-family: "Courier New", monospace;
+            font-size: 11px;
+            padding: 10px;
+            resize: vertical;
+        }
+        button {
+            background: #7D90A9;
+            color: white;
+            border: none;
+            padding: 10px 16px;
+            font-size: 13px;
+            cursor: pointer;
+            margin: 5px 5px 5px 0;
+            border-radius: 4px;
+        }
+        button:active { background: #5A6E85; }
+        #status { color: #7D90A9; font-size: 12px; }
+        .btn-group { display: flex; flex-wrap: wrap; }
+        #performance-warning {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.72);
+            z-index: 9999;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        #performance-warning.show { display: flex; }
+        .warning-box {
+            width: min(440px, 100%);
+            background: #202020;
+            border: 1px solid #444;
+            border-radius: 10px;
+            padding: 18px;
+            box-shadow: 0 12px 40px rgba(0,0,0,0.45);
+        }
+        .warning-box h2 { font-size: 16px; margin-bottom: 10px; color: #e8e8e8; }
+        .warning-box p { color: #bbb; font-size: 13px; line-height: 1.6; margin-bottom: 16px; }
+        .warning-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+        .warning-actions .cancel { background: #444; }
+        .warning-actions .continue { background: #7D90A9; }
+    </style>
+</head>
+<body>
+    <h1>🖼️ 图片转 LaTeX 像素拼图</h1>
+    <p class="info">选择一张图片，自动缩放为像素画，同色相邻像素自动合并。</p>
+    <input type="file" id="imageInput" accept="image/*">
+    <br>
+    <div class="pixel-settings">
+        <label>像素模式：</label>
+        <select id="pixelMode">
+            <option value="adaptive" selected>自适应像素</option>
+            <option value="custom">自定义像素</option>
+        </select>
+        <span id="adaptiveControls">
+            <label>最长边：</label><input type="number" id="adaptiveSize" min="1" value="24"> px
+        </span>
+        <span id="customControls" style="display:none;">
+            <label>宽：</label><input type="number" id="customWidth" min="1" value="24"> px
+            <label>高：</label><input type="number" id="customHeight" min="1" value="24"> px
+        </span>
+    </div>
+    <p class="info" id="original-size">原图尺寸：上传图片后显示。自定义尺寸不能超过原图像素。</p>
+    <div id="preview-container" style="display:none;">
+        <canvas id="preview"></canvas>
+        <span id="preview-label"></span>
+    </div>
+    <br>
+    <div class="btn-group">
+        <button onclick="generateLaTeX()">生成代码</button>
+        <button onclick="downloadFile()">下载为文件</button>
+    </div>
+    <p class="info" id="status">上传图片后点击"生成代码"，再点"下载为文件"保存</p>
+    <textarea id="output" placeholder="LaTeX代码将在这里显示..." readonly></textarea>
+
+    <div id="performance-warning" role="dialog" aria-modal="true" aria-labelledby="performance-warning-title">
+        <div class="warning-box">
+            <h2 id="performance-warning-title">性能警告</h2>
+            <p id="performance-warning-text"></p>
+            <div class="warning-actions">
+                <button class="cancel" id="performance-cancel">取消</button>
+                <button class="continue" id="performance-continue">我知道了，继续炸我的浏览器</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const PIXEL_W = 0.727;
+        const PIXEL_H = 0.715;
+        let originalImage = null;
+        let imageDataCache = null;
+        let allLines = [];
+        let currentWidth = 24;
+        let currentHeight = 24;
+
+        const pixelMode = document.getElementById('pixelMode');
+        const adaptiveControls = document.getElementById('adaptiveControls');
+        const customControls = document.getElementById('customControls');
+        const adaptiveSize = document.getElementById('adaptiveSize');
+        const customWidth = document.getElementById('customWidth');
+        const customHeight = document.getElementById('customHeight');
+        const originalSizeEl = document.getElementById('original-size');
+        const previewContainer = document.getElementById('preview-container');
+        const previewCanvas = document.getElementById('preview');
+        const previewLabel = document.getElementById('preview-label');
+        const statusEl = document.getElementById('status');
+        const performanceWarning = document.getElementById('performance-warning');
+        const performanceWarningText = document.getElementById('performance-warning-text');
+        const performanceCancel = document.getElementById('performance-cancel');
+        const performanceContinue = document.getElementById('performance-continue');
+        const PERFORMANCE_NOTICE_PIXELS = 50000;
+        const PERFORMANCE_WARNING_PIXELS = 100000;
+        let pendingGeneration = null;
+
+        performanceCancel.addEventListener('click', function() {
+            performanceWarning.classList.remove('show');
+            pendingGeneration = null;
+            statusEl.textContent = '已取消生成';
+        });
+
+        performanceContinue.addEventListener('click', function() {
+            performanceWarning.classList.remove('show');
+            const target = pendingGeneration;
+            pendingGeneration = null;
+            if (target) generateLaTeXNow(target);
+        });
+
+        function positiveInt(input, fallback = 1) {
+            const n = Math.floor(Number(input.value));
+            return Number.isFinite(n) && n > 0 ? n : fallback;
+        }
+
+        function getTargetSize(showAlert = true) {
+            if (!originalImage) return null;
+            const ow = originalImage.naturalWidth || originalImage.width;
+            const oh = originalImage.naturalHeight || originalImage.height;
+
+            if (pixelMode.value === 'custom') {
+                const w = positiveInt(customWidth);
+                const h = positiveInt(customHeight);
+                if (w > ow || h > oh) {
+                    if (showAlert) alert('自定义像素不能超过原图像素（原图：' + ow + '×' + oh + ' px）。');
+                    return null;
+                }
+                return { width: w, height: h };
+            }
+
+            let maxSide = positiveInt(adaptiveSize, 24);
+            const originalMax = Math.max(ow, oh);
+            if (maxSide > originalMax) maxSide = originalMax;
+            let w, h;
+            if (ow >= oh) {
+                w = maxSide;
+                h = Math.max(1, Math.round(maxSide * oh / ow));
+            } else {
+                h = maxSide;
+                w = Math.max(1, Math.round(maxSide * ow / oh));
+            }
+            return { width: w, height: h };
+        }
+
+        function refreshPreview(showAlert = true) {
+            if (!originalImage) return;
+            const target = getTargetSize(showAlert);
+            if (!target) {
+                statusEl.textContent = '⚠️ 自定义像素超过原图尺寸，请重新输入';
+                return;
+            }
+            currentWidth = target.width;
+            currentHeight = target.height;
+            drawPreview(originalImage, currentWidth, currentHeight);
+            imageDataCache = getImageData(originalImage, currentWidth, currentHeight);
+            const totalPixels = currentWidth * currentHeight;
+            statusEl.textContent = totalPixels >= PERFORMANCE_NOTICE_PIXELS
+                ? '⚠️ 当前像素：' + currentWidth + '×' + currentHeight + '（' + totalPixels.toLocaleString('zh-CN') + ' 像素），较高分辨率，生成可能较慢'
+                : '当前像素：' + currentWidth + '×' + currentHeight + '，点击“生成代码”';
+        }
+
+        pixelMode.addEventListener('change', function() {
+            const custom = this.value === 'custom';
+            adaptiveControls.style.display = custom ? 'none' : 'inline';
+            customControls.style.display = custom ? 'inline' : 'none';
+            refreshPreview(false);
+        });
+        adaptiveSize.addEventListener('change', () => refreshPreview(false));
+        customWidth.addEventListener('change', () => refreshPreview(true));
+        customHeight.addEventListener('change', () => refreshPreview(true));
+
+        document.getElementById('imageInput').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(ev) {
+                const img = new Image();
+                img.onload = function() {
+                    originalImage = img;
+                    const ow = img.naturalWidth || img.width;
+                    const oh = img.naturalHeight || img.height;
+                    originalSizeEl.textContent = '原图尺寸：' + ow + '×' + oh + ' px。自定义尺寸不能超过原图像素。';
+                    customWidth.max = ow;
+                    customHeight.max = oh;
+                    adaptiveSize.max = Math.max(ow, oh);
+                    refreshPreview(false);
+                };
+                img.src = ev.target.result;
+            };
+            reader.readAsDataURL(file);
+        });
+
+        function drawPreview(img, width, height) {
+            const canvas = previewCanvas;
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            ctx.imageSmoothingEnabled = true;
+            ctx.drawImage(img, 0, 0, width, height);
+            const scale = Math.min(4, 200 / Math.max(width, height));
+            canvas.style.width = Math.max(1, Math.round(width * scale)) + 'px';
+            canvas.style.height = Math.max(1, Math.round(height * scale)) + 'px';
+            previewContainer.style.display = 'inline-block';
+            previewLabel.textContent = width + '×' + height;
+        }
+
+        function getImageData(img, width, height) {
+            const canvas = document.createElement('canvas');
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, width, height);
+            return ctx.getImageData(0, 0, width, height);
+        }
+
+        function rgbToHex(r, g, b) {
+            return '#' + [r, g, b].map(x => x.toString(16).padStart(2, '0').toUpperCase()).join('');
+        }
+
+        function generateLaTeX() {
+            if (!originalImage) {
+                statusEl.textContent = '请先选择一张图片';
+                return;
+            }
+            const target = getTargetSize(true);
+            if (!target) {
+                statusEl.textContent = '⚠️ 自定义像素超过原图尺寸，未生成代码';
+                return;
+            }
+
+            const totalPixels = target.width * target.height;
+            if (totalPixels >= PERFORMANCE_WARNING_PIXELS) {
+                pendingGeneration = target;
+                performanceWarningText.textContent = '当前将处理 ' + totalPixels.toLocaleString('zh-CN') + ' 个像素（' + target.width + '×' + target.height + '）。高分辨率图片可能生成大量 LaTeX 代码。在部分设备，尤其是手机浏览器上，可能出现明显卡顿、无响应或页面崩溃。实际性能取决于图片复杂度、设备性能和浏览器环境。';
+                performanceWarning.classList.add('show');
+                return;
+            }
+            generateLaTeXNow(target);
+        }
+
+        function generateLaTeXNow(target) {
+            if (target.width !== currentWidth || target.height !== currentHeight || !imageDataCache) refreshPreview(false);
+
+            const width = currentWidth;
+            const height = currentHeight;
+            const data = imageDataCache.data;
+            allLines = [];
+            const totalWidth = width * PIXEL_W;
+            const totalHeight = height * PIXEL_H;
+
+            allLines.push('\\(\\begin{array}{l}');
+            for (let row = 0; row < height; row++) {
+                let col = 0;
+                while (col < width) {
+                    const idx = (row * width + col) * 4;
+                    const r = data[idx], g = data[idx + 1], b = data[idx + 2], a = data[idx + 3];
+                    if (a === 0) { col++; continue; }
+                    const hex = rgbToHex(r, g, b);
+                    let span = 1;
+                    while (col + span < width) {
+                        const nidx = (row * width + col + span) * 4;
+                        const nr = data[nidx], ng = data[nidx + 1], nb = data[nidx + 2], na = data[nidx + 3];
+                        if (na === 0 || rgbToHex(nr, ng, nb) !== hex) break;
+                        span++;
+                    }
+                    const x = (col * PIXEL_W).toFixed(3);
+                    const y = ((height - 1 - row) * PIXEL_H).toFixed(3);
+                    const w = (span * PIXEL_W).toFixed(3);
+                    allLines.push('\\rlap{\\kern{' + x + 'em}\\raisebox{' + y + 'em}{\\textcolor{' + hex + '}{\\rule{' + w + 'em}{' + PIXEL_H.toFixed(3) + 'em}}}}{}');
+                    col += span;
+                }
+            }
+            allLines.push('\\rule{' + totalWidth.toFixed(3) + 'em}{0pt}\\rule{0pt}{' + totalHeight.toFixed(3) + 'em}');
+            allLines.push('\\end{array}\\)');
+            document.getElementById('output').value = allLines.join('\n');
+            statusEl.textContent = '✅ 已生成 ' + width + '×' + height + ' 像素拼图（同色合并后 ' + allLines.length + ' 行）| 点“下载为文件”保存';
+        }
+
+        function downloadFile() {
+            if (allLines.length === 0) {
+                statusEl.textContent = '请先生成代码再下载';
+                return;
+            }
+            const content = allLines.join('\n');
+            const base64 = btoa(unescape(encodeURIComponent(content)));
+            const a = document.createElement('a');
+            a.href = 'data:text/plain;base64,' + base64;
+            a.download = 'latex-pixel-art-' + currentWidth + 'x' + currentHeight + '.txt';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            statusEl.textContent = '✅ 文件已下载！(' + currentWidth + '×' + currentHeight + '，Base64方式，兼容所有浏览器)';
+        }
+    </script>
+    <footer style="margin-top:18px;color:#666;font-size:11px;line-height:1.7;">
+        Image to LaTeX Pixel Art · 开源版本<br>
+        纯浏览器本地处理 · 单 HTML 文件 · MIT License
+    </footer>
+</body>
+</html>
