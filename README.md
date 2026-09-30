@@ -6,6 +6,12 @@
 
 整个工具只有一个 HTML 文件，不需要服务器，不需要安装依赖，图片处理也在浏览器本地完成。
 
+## 在线使用
+
+无需下载或安装，直接在浏览器中使用：
+
+https://yangdelefangde-cell.github.io/Image-to-LaTeX-Pixel-Art/
+
 ## 功能
 
 - 图片本地导入与像素化预览
